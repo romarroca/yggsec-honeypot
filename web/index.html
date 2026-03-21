@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cowrie Map</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="hero">
+          <p class="eyebrow">Cowrie Honeypot</p>
+          <h1>Probe Origin Map</h1>
+          <p class="hero-copy">
+            Local-first visibility into Cowrie sessions, failed logins, successful logins, and captured commands.
+          </p>
+        </div>
+
+        <form id="filters" class="panel">
+          <div class="panel-head">
+            <h2>Filters</h2>
+            <button type="button" id="refreshButton" class="ghost-button">Refresh</button>
+          </div>
+
+          <label>
+            <span>Start</span>
+            <input type="datetime-local" id="start" />
+          </label>
+
+          <label>
+            <span>End</span>
+            <input type="datetime-local" id="end" />
+          </label>
+
+          <label>
+            <span>Event type</span>
+            <select id="eventid">
+              <option value="">All tracked events</option>
+              <option value="cowrie.session.connect">cowrie.session.connect</option>
+              <option value="cowrie.login.failed">cowrie.login.failed</option>
+              <option value="cowrie.login.success">cowrie.login.success</option>
+              <option value="cowrie.command.input">cowrie.command.input</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Country</span>
+            <input type="text" id="country" placeholder="United States" />
+          </label>
+
+          <label>
+            <span>Source IP</span>
+            <input type="text" id="src_ip" placeholder="203.0.113.42" />
+          </label>
+
+          <div class="button-row">
+            <button type="submit">Apply</button>
+            <button type="button" id="resetButton" class="ghost-button">Reset</button>
+          </div>
+        </form>
+
+        <section class="panel stats">
+          <div class="panel-head">
+            <h2>Recent Counts</h2>
+            <span id="statusBadge" class="badge">Loading</span>
+          </div>
+          <div class="stat-grid">
+            <article>
+              <span>Total</span>
+              <strong id="totalEvents">0</strong>
+            </article>
+            <article>
+              <span>24h</span>
+              <strong id="last24h">0</strong>
+            </article>
+            <article>
+              <span>7d</span>
+              <strong id="last7d">0</strong>
+            </article>
+            <article>
+              <span>30d</span>
+              <strong id="last30d">0</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Top Countries</h2>
+          </div>
+          <ul id="topCountries" class="list"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Top ASNs</h2>
+          </div>
+          <ul id="topAsns" class="list"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Top Usernames</h2>
+          </div>
+          <ul id="topUsernames" class="list"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Event Mix</h2>
+          </div>
+          <ul id="eventBreakdown" class="list"></ul>
+        </section>
+      </aside>
+
+      <main class="map-wrap">
+        <div class="map-toolbar">
+          <div>
+            <strong>Interactive Origin Map</strong>
+            <p id="mapMeta">Waiting for data...</p>
+          </div>
+          <div class="legend">
+            <span><i style="background:#3b82f6"></i>Connect</span>
+            <span><i style="background:#f97316"></i>Failed</span>
+            <span><i style="background:#16a34a"></i>Success</span>
+            <span><i style="background:#dc2626"></i>Command</span>
+          </div>
+        </div>
+        <div id="map"></div>
+      </main>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

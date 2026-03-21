@@ -1,0 +1,20 @@
+services:
+  cowrie-map:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: cowrie-map
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    environment:
+      TZ: America/Chicago
+      APP_DB_PATH: /state/cowrie_map.db
+      COWRIE_LOG_PATH: /cowrie/cowrie-var/log/cowrie/cowrie.json
+      GEOIP_CITY_DB: /geoip/GeoLite2-City.mmdb
+      GEOIP_ASN_DB: /geoip/GeoLite2-ASN.mmdb
+      POLL_INTERVAL_SECONDS: "15"
+    volumes:
+      - /opt/honeypot/cowrie/cowrie-var:/cowrie/cowrie-var:ro
+      - ./data:/state
+      - ./geoip:/geoip:ro
