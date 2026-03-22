@@ -32,8 +32,8 @@ Lightweight local web app for ingesting Cowrie SSH/Telnet logs, serving a fake W
 - Stores parsed events in SQLite at `./data/cowrie_map.db`
 - Prevents duplicate ingestion with a unique SHA-256 hash per log line
 - Polls the Cowrie log every 15 seconds and only processes new complete lines
-- Exposes `/health`, `/api/events`, `/api/summary`, and `/api/geojson`
-- Serves the intel dashboard at `/dashboard`
+- Exposes `/health`, `/api/events`, `/api/summary`, and `/api/geojson` on a private dashboard port
+- Keeps the fake WordPress site and the dashboard on separate ports
 - Keeps the web honeypot deterministic and low-interaction with no real CMS or shell behavior
 
 ## GeoIP Files
@@ -60,16 +60,16 @@ Open the fake site at:
 http://localhost:8080/
 ```
 
-Open the dashboard at:
+Open the private dashboard at:
 
 ```text
-http://localhost:8080/dashboard
+http://localhost:8081/
 ```
 
 Check service health:
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:8081/health
 ```
 
 ## API Examples
@@ -77,25 +77,25 @@ curl http://localhost:8080/health
 Fetch recent failed Cowrie logins from a country:
 
 ```bash
-curl "http://localhost:8080/api/events?source=cowrie&event_type=cowrie.login.failed&country=United%20States&limit=50"
+curl "http://localhost:8081/api/events?source=cowrie&event_type=cowrie.login.failed&country=United%20States&limit=50"
 ```
 
 Fetch recent WordPress login attempts:
 
 ```bash
-curl "http://localhost:8080/api/events?source=wordpress_web&event_type=wp_login_attempt&limit=20"
+curl "http://localhost:8081/api/events?source=wordpress_web&event_type=wp_login_attempt&limit=20"
 ```
 
 Fetch map-ready GeoJSON for a single IP:
 
 ```bash
-curl "http://localhost:8080/api/geojson?src_ip=203.0.113.42"
+curl "http://localhost:8081/api/geojson?src_ip=203.0.113.42"
 ```
 
 Fetch summary stats for a date range:
 
 ```bash
-curl "http://localhost:8080/api/summary?start=2026-03-01T00:00:00Z&end=2026-03-21T23:59:59Z"
+curl "http://localhost:8081/api/summary?start=2026-03-01T00:00:00Z&end=2026-03-21T23:59:59Z"
 ```
 
 ## Web Honeypot Test Commands
@@ -136,10 +136,12 @@ curl -i http://localhost:8080/wp-json
 
 ## Notes
 
-- The compose stack uses a single lightweight Python container. Nginx is not included to keep memory and CPU usage lower on a small ARM board.
+- The compose stack uses lightweight Python services only. Nginx is not included to keep memory and CPU usage lower on a small ARM board.
+- Compose now runs two lightweight services from the same image: a public honeypot on `:8080` and the dashboard/API on `:8081`.
 - The Cowrie log directory is mounted read-only from `/opt/honeypot/cowrie/cowrie-var`.
 - SQLite state is stored in `./data` so it persists across container restarts.
 - TLS is best terminated by a reverse proxy or Cloudflare Tunnel in front of this container. The honeypot itself stays lightweight and speaks HTTP internally.
+- The dashboard/API is on a separate port from the honeypot. If you want to restrict it later, you can bind it to localhost or place it behind a firewall or reverse proxy.
 - Old events are deleted automatically after `EVENT_RETENTION_DAYS` to keep storage growth under control on small hardware.
 - OpenStreetMap tiles and the Leaflet CDN require network access from the browser.
 - Timestamps are normalized to UTC in the API and database. The browser will render them in the local timezone.

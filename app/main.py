@@ -51,6 +51,7 @@ FAKE_TAGLINE = os.getenv(
     "FAKE_SITE_TAGLINE", "Home lab notes, blue team guides, and infrastructure journal."
 )
 FAKE_WORDPRESS_VERSION = os.getenv("FAKE_WORDPRESS_VERSION", "6.4.3")
+APP_ROLE = os.getenv("APP_ROLE", "all").strip().lower()
 
 SOURCE_ALL = "all"
 SOURCE_COWRIE = "cowrie"
@@ -158,6 +159,23 @@ EVENT_COLUMNS = {
 }
 
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
+
+def env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+SERVE_HONEYPOT = env_flag("SERVE_HONEYPOT", APP_ROLE in {"all", "honeypot"})
+SERVE_DASHBOARD = env_flag("SERVE_DASHBOARD", APP_ROLE in {"all", "dashboard"})
+ENABLE_COWRIE_INGEST = env_flag(
+    "ENABLE_COWRIE_INGEST", APP_ROLE in {"all", "dashboard"}
+)
+ENABLE_EVENT_CLEANUP = env_flag(
+    "ENABLE_EVENT_CLEANUP", APP_ROLE in {"all", "dashboard"}
+)
 
 
 def utc_now_iso() -> str:
@@ -349,7 +367,7 @@ class GeoIPEnricher:
 
 
 def cleanup_old_events(connection: sqlite3.Connection | None = None) -> int:
-    if EVENT_RETENTION_DAYS <= 0:
+    if EVENT_RETENTION_DAYS <= 0 or not ENABLE_EVENT_CLEANUP:
         return 0
 
     cutoff = (
@@ -441,7 +459,7 @@ class CowrieIngestor:
         now = datetime.now(timezone.utc)
         if (
             now - self._last_cleanup
-        ).total_seconds() < CLEANUP_INTERVAL_SECONDS or EVENT_RETENTION_DAYS <= 0:
+        ).total_seconds() < CLEANUP_INTERVAL_SECONDS or EVENT_RETENTION_DAYS <= 0 or not ENABLE_EVENT_CLEANUP:
             return 0
 
         deleted = cleanup_old_events(connection)
@@ -1156,24 +1174,30 @@ def build_xmlrpc_payload(raw_body: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    cleanup_old_events()
     geoip = GeoIPEnricher(GEOIP_CITY_DB, GEOIP_ASN_DB)
-    ingestor = CowrieIngestor(LOG_PATH, geoip)
     app.state.geoip = geoip
-    app.state.ingestor = ingestor
+    app.state.ingestor = None
+    app.state.poller = None
 
-    await ingestor.run_once()
-    poller = asyncio.create_task(ingestor.poll_forever())
-    app.state.poller = poller
+    if ENABLE_EVENT_CLEANUP:
+        cleanup_old_events()
+
+    if ENABLE_COWRIE_INGEST:
+        ingestor = CowrieIngestor(LOG_PATH, geoip)
+        app.state.ingestor = ingestor
+        await ingestor.run_once()
+        app.state.poller = asyncio.create_task(ingestor.poll_forever())
 
     try:
         yield
     finally:
-        poller.cancel()
-        try:
-            await poller
-        except asyncio.CancelledError:
-            pass
+        poller = getattr(app.state, "poller", None)
+        if poller:
+            poller.cancel()
+            try:
+                await poller
+            except asyncio.CancelledError:
+                pass
         geoip.close()
 
 
@@ -1186,393 +1210,403 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.mount("/dashboard-static", StaticFiles(directory=DASHBOARD_DIR), name="dashboard-static")
+def register_dashboard_routes(app: FastAPI) -> None:
+    app.mount("/dashboard-static", StaticFiles(directory=DASHBOARD_DIR), name="dashboard-static")
 
+    @app.get("/health")
+    async def health() -> dict[str, Any]:
+        with get_connection() as connection:
+            counts = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_events,
+                    SUM(CASE WHEN source = ? THEN 1 ELSE 0 END) AS cowrie_events,
+                    SUM(CASE WHEN source = ? THEN 1 ELSE 0 END) AS wordpress_events
+                FROM events
+                """,
+                (SOURCE_COWRIE, SOURCE_WORDPRESS),
+            ).fetchone()
+            state = connection.execute(
+                "SELECT offset, updated_at FROM ingest_state WHERE log_path = ?",
+                (LOG_PATH,),
+            ).fetchone()
 
-@app.middleware("http")
-async def wordpress_request_logger(request: Request, call_next):
-    should_capture_body = should_log_wordpress_request(request.url.path) and request.method.upper() in {
-        "POST",
-        "PUT",
-        "PATCH",
-    }
-    request.state.raw_body = b""
-
-    if should_capture_body:
-        body = await request.body()
-        request.state.raw_body = body
-
-        async def receive() -> dict[str, Any]:
-            return {"type": "http.request", "body": body, "more_body": False}
-
-        request._receive = receive
-
-    response = await call_next(request)
-    if should_log_wordpress_request(request.url.path):
-        try:
-            await log_wordpress_request(request, response)
-        except Exception:
-            logger.exception("Failed to log WordPress honeypot request")
-    return response
-
-
-@app.get("/health")
-async def health() -> dict[str, Any]:
-    with get_connection() as connection:
-        counts = connection.execute(
-            """
-            SELECT
-                COUNT(*) AS total_events,
-                SUM(CASE WHEN source = ? THEN 1 ELSE 0 END) AS cowrie_events,
-                SUM(CASE WHEN source = ? THEN 1 ELSE 0 END) AS wordpress_events
-            FROM events
-            """,
-            (SOURCE_COWRIE, SOURCE_WORDPRESS),
-        ).fetchone()
-        state = connection.execute(
-            "SELECT offset, updated_at FROM ingest_state WHERE log_path = ?",
-            (LOG_PATH,),
-        ).fetchone()
-
-    return {
-        "status": "ok",
-        "log_path": LOG_PATH,
-        "log_exists": Path(LOG_PATH).exists(),
-        "db_path": DB_PATH,
-        "geoip_city_db": Path(GEOIP_CITY_DB).exists(),
-        "geoip_asn_db": Path(GEOIP_ASN_DB).exists(),
-        "poll_interval_seconds": POLL_INTERVAL_SECONDS,
-        "event_retention_days": EVENT_RETENTION_DAYS,
-        "total_events": counts["total_events"] or 0,
-        "cowrie_events": counts["cowrie_events"] or 0,
-        "wordpress_events": counts["wordpress_events"] or 0,
-        "ingest_state": dict(state) if state else None,
-    }
-
-
-@app.get("/dashboard", include_in_schema=False)
-@app.get("/dashboard/", include_in_schema=False)
-async def dashboard() -> FileResponse:
-    return FileResponse(DASHBOARD_DIR / "index.html")
-
-
-@app.get("/api/events")
-async def api_events(
-    start: str | None = None,
-    end: str | None = None,
-    event_type: list[str] | None = Query(default=None),
-    eventid: list[str] | None = Query(default=None),
-    source: str = Query(default=SOURCE_ALL),
-    country: str | None = None,
-    src_ip: str | None = None,
-    path: str | None = None,
-    limit: int = Query(default=200, ge=1, le=2000),
-    offset: int = Query(default=0, ge=0),
-) -> dict[str, Any]:
-    return fetch_events(
-        start=start,
-        end=end,
-        event_types=combine_event_types(flatten_query_values(event_type), flatten_query_values(eventid)),
-        source=source,
-        country=country,
-        src_ip=src_ip,
-        path=path,
-        limit=limit,
-        offset=offset,
-    )
-
-
-@app.get("/api/summary")
-async def api_summary(
-    start: str | None = None,
-    end: str | None = None,
-    event_type: list[str] | None = Query(default=None),
-    eventid: list[str] | None = Query(default=None),
-    source: str = Query(default=SOURCE_ALL),
-    country: str | None = None,
-    src_ip: str | None = None,
-    path: str | None = None,
-) -> dict[str, Any]:
-    return fetch_summary(
-        start=start,
-        end=end,
-        event_types=combine_event_types(flatten_query_values(event_type), flatten_query_values(eventid)),
-        source=source,
-        country=country,
-        src_ip=src_ip,
-        path=path,
-    )
-
-
-@app.get("/api/geojson")
-async def api_geojson(
-    start: str | None = None,
-    end: str | None = None,
-    event_type: list[str] | None = Query(default=None),
-    eventid: list[str] | None = Query(default=None),
-    source: str = Query(default=SOURCE_ALL),
-    country: str | None = None,
-    src_ip: str | None = None,
-    path: str | None = None,
-    limit: int = Query(default=2500, ge=1, le=10000),
-) -> dict[str, Any]:
-    return fetch_geojson(
-        start=start,
-        end=end,
-        event_types=combine_event_types(flatten_query_values(event_type), flatten_query_values(eventid)),
-        source=source,
-        country=country,
-        src_ip=src_ip,
-        path=path,
-        limit=limit,
-    )
-
-
-@app.get("/", include_in_schema=False)
-async def honeypot_home(request: Request) -> HTMLResponse:
-    posts = [
-        {
-            "url": f"/{year}/{month}/{slug}/",
-            "title": details["title"],
-            "date": details["date"],
-            "excerpt": details["excerpt"],
+        return {
+            "status": "ok",
+            "app_role": APP_ROLE,
+            "serve_dashboard": SERVE_DASHBOARD,
+            "serve_honeypot": SERVE_HONEYPOT,
+            "enable_cowrie_ingest": ENABLE_COWRIE_INGEST,
+            "log_path": LOG_PATH,
+            "log_exists": Path(LOG_PATH).exists(),
+            "db_path": DB_PATH,
+            "geoip_city_db": Path(GEOIP_CITY_DB).exists(),
+            "geoip_asn_db": Path(GEOIP_ASN_DB).exists(),
+            "poll_interval_seconds": POLL_INTERVAL_SECONDS,
+            "event_retention_days": EVENT_RETENTION_DAYS,
+            "total_events": counts["total_events"] or 0,
+            "cowrie_events": counts["cowrie_events"] or 0,
+            "wordpress_events": counts["wordpress_events"] or 0,
+            "ingest_state": dict(state) if state else None,
         }
-        for (year, month, slug), details in FAKE_POSTS.items()
-    ]
-    context = build_template_context(
-        request,
-        page_title=FAKE_SITE_NAME,
-        hero_title="Practical notes from a small blue team lab",
-        posts=posts,
-    )
-    return templates.TemplateResponse("wp_home.html", context)
 
+    @app.get("/", include_in_schema=False)
+    @app.get("/dashboard", include_in_schema=False)
+    @app.get("/dashboard/", include_in_schema=False)
+    async def dashboard() -> FileResponse:
+        return FileResponse(DASHBOARD_DIR / "index.html")
 
-@app.get("/about/", include_in_schema=False)
-async def about_page(request: Request) -> HTMLResponse:
-    context = build_template_context(
-        request,
-        page_title=ABOUT_PAGE["title"],
-        headline=ABOUT_PAGE["title"],
-        article_body=ABOUT_PAGE["body"],
-        article_date="Updated March 2026",
-    )
-    return templates.TemplateResponse("wp_post.html", context)
-
-
-@app.get("/{year}/{month}/{slug}/", include_in_schema=False)
-async def fake_post(request: Request, year: str, month: str, slug: str) -> HTMLResponse:
-    post = FAKE_POSTS.get((year, month, slug))
-    if not post:
-        return render_status_page(
-            request,
-            title="Not Found",
-            headline="Page not found",
-            message="The page you requested could not be found.",
-            status_code=404,
+    @app.get("/api/events")
+    async def api_events(
+        start: str | None = None,
+        end: str | None = None,
+        event_type: list[str] | None = Query(default=None),
+        eventid: list[str] | None = Query(default=None),
+        source: str = Query(default=SOURCE_ALL),
+        country: str | None = None,
+        src_ip: str | None = None,
+        path: str | None = None,
+        limit: int = Query(default=200, ge=1, le=2000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        return fetch_events(
+            start=start,
+            end=end,
+            event_types=combine_event_types(
+                flatten_query_values(event_type), flatten_query_values(eventid)
+            ),
+            source=source,
+            country=country,
+            src_ip=src_ip,
+            path=path,
+            limit=limit,
+            offset=offset,
         )
-    context = build_template_context(
-        request,
-        page_title=post["title"],
-        headline=post["title"],
-        article_body=post["body"],
-        article_date=post["date"],
-        article_author=post["author"],
-    )
-    return templates.TemplateResponse("wp_post.html", context)
+
+    @app.get("/api/summary")
+    async def api_summary(
+        start: str | None = None,
+        end: str | None = None,
+        event_type: list[str] | None = Query(default=None),
+        eventid: list[str] | None = Query(default=None),
+        source: str = Query(default=SOURCE_ALL),
+        country: str | None = None,
+        src_ip: str | None = None,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        return fetch_summary(
+            start=start,
+            end=end,
+            event_types=combine_event_types(
+                flatten_query_values(event_type), flatten_query_values(eventid)
+            ),
+            source=source,
+            country=country,
+            src_ip=src_ip,
+            path=path,
+        )
+
+    @app.get("/api/geojson")
+    async def api_geojson(
+        start: str | None = None,
+        end: str | None = None,
+        event_type: list[str] | None = Query(default=None),
+        eventid: list[str] | None = Query(default=None),
+        source: str = Query(default=SOURCE_ALL),
+        country: str | None = None,
+        src_ip: str | None = None,
+        path: str | None = None,
+        limit: int = Query(default=2500, ge=1, le=10000),
+    ) -> dict[str, Any]:
+        return fetch_geojson(
+            start=start,
+            end=end,
+            event_types=combine_event_types(
+                flatten_query_values(event_type), flatten_query_values(eventid)
+            ),
+            source=source,
+            country=country,
+            src_ip=src_ip,
+            path=path,
+            limit=limit,
+        )
 
 
-@app.get("/wp-login.php", include_in_schema=False)
-async def wp_login(request: Request) -> HTMLResponse:
-    action = request.query_params.get("action", "")
-    redirect_to = request.query_params.get("redirect_to", "/wp-admin/")
-    context = build_template_context(
-        request,
-        page_title="Log In",
-        action=action,
-        redirect_to=redirect_to,
-        error_message=None,
-    )
-    response = templates.TemplateResponse("wp_login.html", context)
-    response.set_cookie("wordpress_test_cookie", "WP Cookie check", samesite="lax")
-    return response
+def register_honeypot_routes(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def wordpress_request_logger(request: Request, call_next):
+        should_capture_body = should_log_wordpress_request(request.url.path) and request.method.upper() in {
+            "POST",
+            "PUT",
+            "PATCH",
+        }
+        request.state.raw_body = b""
 
+        if should_capture_body:
+            body = await request.body()
+            request.state.raw_body = body
 
-@app.post("/wp-login.php", include_in_schema=False)
-async def wp_login_attempt(request: Request) -> HTMLResponse:
-    form_values = parse_qs(
-        getattr(request.state, "raw_body", b"").decode("utf-8", errors="replace"),
-        keep_blank_values=True,
-    )
-    action = form_values.get("action", [request.query_params.get("action", "")])[0]
-    redirect_to = form_values.get("redirect_to", [request.query_params.get("redirect_to", "/wp-admin/")])[0]
-    username = clean_text(form_values.get("log", [""])[0])
+            async def receive() -> dict[str, Any]:
+                return {"type": "http.request", "body": body, "more_body": False}
 
-    if action == "lostpassword":
+            request._receive = receive
+
+        response = await call_next(request)
+        if should_log_wordpress_request(request.url.path):
+            try:
+                await log_wordpress_request(request, response)
+            except Exception:
+                logger.exception("Failed to log WordPress honeypot request")
+        return response
+
+    @app.get("/", include_in_schema=False)
+    async def honeypot_home(request: Request) -> HTMLResponse:
+        posts = [
+            {
+                "url": f"/{year}/{month}/{slug}/",
+                "title": details["title"],
+                "date": details["date"],
+                "excerpt": details["excerpt"],
+            }
+            for (year, month, slug), details in FAKE_POSTS.items()
+        ]
         context = build_template_context(
             request,
-            page_title="Password Recovery",
+            page_title=FAKE_SITE_NAME,
+            hero_title="Practical notes from a small blue team lab",
+            posts=posts,
+        )
+        return templates.TemplateResponse("wp_home.html", context)
+
+    @app.get("/about/", include_in_schema=False)
+    async def about_page(request: Request) -> HTMLResponse:
+        context = build_template_context(
+            request,
+            page_title=ABOUT_PAGE["title"],
+            headline=ABOUT_PAGE["title"],
+            article_body=ABOUT_PAGE["body"],
+            article_date="Updated March 2026",
+        )
+        return templates.TemplateResponse("wp_post.html", context)
+
+    @app.get("/{year}/{month}/{slug}/", include_in_schema=False)
+    async def fake_post(request: Request, year: str, month: str, slug: str) -> HTMLResponse:
+        post = FAKE_POSTS.get((year, month, slug))
+        if not post:
+            return render_status_page(
+                request,
+                title="Not Found",
+                headline="Page not found",
+                message="The page you requested could not be found.",
+                status_code=404,
+            )
+        context = build_template_context(
+            request,
+            page_title=post["title"],
+            headline=post["title"],
+            article_body=post["body"],
+            article_date=post["date"],
+            article_author=post["author"],
+        )
+        return templates.TemplateResponse("wp_post.html", context)
+
+    @app.get("/wp-login.php", include_in_schema=False)
+    async def wp_login(request: Request) -> HTMLResponse:
+        action = request.query_params.get("action", "")
+        redirect_to = request.query_params.get("redirect_to", "/wp-admin/")
+        context = build_template_context(
+            request,
+            page_title="Log In",
             action=action,
             redirect_to=redirect_to,
-            recovery_notice="If that account exists, recovery guidance has been queued for review.",
             error_message=None,
-            last_username=username,
         )
         response = templates.TemplateResponse("wp_login.html", context)
         response.set_cookie("wordpress_test_cookie", "WP Cookie check", samesite="lax")
         return response
 
-    context = build_template_context(
-        request,
-        page_title="Log In",
-        action=action,
-        redirect_to=redirect_to,
-        error_message="The credentials you entered could not be verified. Please try again.",
-        last_username=username,
-    )
-    response = templates.TemplateResponse("wp_login.html", context, status_code=200)
-    response.set_cookie("wordpress_test_cookie", "WP Cookie check", samesite="lax")
-    return response
+    @app.post("/wp-login.php", include_in_schema=False)
+    async def wp_login_attempt(request: Request) -> HTMLResponse:
+        form_values = parse_qs(
+            getattr(request.state, "raw_body", b"").decode("utf-8", errors="replace"),
+            keep_blank_values=True,
+        )
+        action = form_values.get("action", [request.query_params.get("action", "")])[0]
+        redirect_to = form_values.get(
+            "redirect_to", [request.query_params.get("redirect_to", "/wp-admin/")]
+        )[0]
+        username = clean_text(form_values.get("log", [""])[0])
 
+        if action == "lostpassword":
+            context = build_template_context(
+                request,
+                page_title="Password Recovery",
+                action=action,
+                redirect_to=redirect_to,
+                recovery_notice="If that account exists, recovery guidance has been queued for review.",
+                error_message=None,
+                last_username=username,
+            )
+            response = templates.TemplateResponse("wp_login.html", context)
+            response.set_cookie("wordpress_test_cookie", "WP Cookie check", samesite="lax")
+            return response
 
-@app.api_route("/wp-admin", methods=["GET", "POST", "HEAD"], include_in_schema=False)
-@app.api_route("/wp-admin/", methods=["GET", "POST", "HEAD"], include_in_schema=False)
-async def wp_admin(request: Request) -> RedirectResponse:
-    return RedirectResponse(url=login_redirect_path("/wp-admin/"), status_code=302)
+        context = build_template_context(
+            request,
+            page_title="Log In",
+            action=action,
+            redirect_to=redirect_to,
+            error_message="The credentials you entered could not be verified. Please try again.",
+            last_username=username,
+        )
+        response = templates.TemplateResponse("wp_login.html", context, status_code=200)
+        response.set_cookie("wordpress_test_cookie", "WP Cookie check", samesite="lax")
+        return response
 
+    @app.api_route("/wp-admin", methods=["GET", "POST", "HEAD"], include_in_schema=False)
+    @app.api_route("/wp-admin/", methods=["GET", "POST", "HEAD"], include_in_schema=False)
+    async def wp_admin(request: Request) -> RedirectResponse:
+        return RedirectResponse(url=login_redirect_path("/wp-admin/"), status_code=302)
 
-@app.api_route("/wp-admin/install.php", methods=["GET", "POST", "HEAD"], include_in_schema=False)
-async def wp_admin_install(request: Request) -> HTMLResponse:
-    return render_status_page(
-        request,
-        title="Already Installed",
-        headline="WordPress is already installed.",
-        message="This site appears to be configured already. Log in to continue managing content.",
-        status_code=200,
-    )
-
-
-@app.api_route("/wp-admin/{subpath:path}", methods=["GET", "POST", "HEAD"], include_in_schema=False)
-async def wp_admin_subpaths(subpath: str) -> RedirectResponse:
-    target = f"/wp-admin/{subpath}".rstrip("/") or "/wp-admin/"
-    if not target.endswith("/") and "." not in Path(target).name:
-        target = f"{target}/"
-    return RedirectResponse(url=login_redirect_path(target), status_code=302)
-
-
-@app.api_route("/xmlrpc.php", methods=["GET", "POST", "HEAD"], include_in_schema=False)
-async def xmlrpc_endpoint(request: Request) -> Response:
-    if request.method.upper() != "POST":
-        return PlainTextResponse(
-            "XML-RPC endpoint expects POST requests.",
-            status_code=405,
-            headers={"Allow": "POST"},
+    @app.api_route("/wp-admin/install.php", methods=["GET", "POST", "HEAD"], include_in_schema=False)
+    async def wp_admin_install(request: Request) -> HTMLResponse:
+        return render_status_page(
+            request,
+            title="Already Installed",
+            headline="WordPress is already installed.",
+            message="This site appears to be configured already. Log in to continue managing content.",
+            status_code=200,
         )
 
-    body_text = getattr(request.state, "raw_body", b"").decode("utf-8", errors="replace")
-    return Response(
-        content=build_xmlrpc_payload(body_text),
-        media_type="text/xml",
-        status_code=200,
+    @app.api_route("/wp-admin/{subpath:path}", methods=["GET", "POST", "HEAD"], include_in_schema=False)
+    async def wp_admin_subpaths(subpath: str) -> RedirectResponse:
+        target = f"/wp-admin/{subpath}".rstrip("/") or "/wp-admin/"
+        if not target.endswith("/") and "." not in Path(target).name:
+            target = f"{target}/"
+        return RedirectResponse(url=login_redirect_path(target), status_code=302)
+
+    @app.api_route("/xmlrpc.php", methods=["GET", "POST", "HEAD"], include_in_schema=False)
+    async def xmlrpc_endpoint(request: Request) -> Response:
+        if request.method.upper() != "POST":
+            return PlainTextResponse(
+                "XML-RPC endpoint expects POST requests.",
+                status_code=405,
+                headers={"Allow": "POST"},
+            )
+
+        body_text = getattr(request.state, "raw_body", b"").decode("utf-8", errors="replace")
+        return Response(
+            content=build_xmlrpc_payload(body_text),
+            media_type="text/xml",
+            status_code=200,
+        )
+
+    @app.get("/wp-json", include_in_schema=False)
+    @app.get("/wp-json/", include_in_schema=False)
+    async def wp_json(request: Request) -> JSONResponse:
+        base_url = site_base_url(request)
+        return JSONResponse(
+            {
+                "name": FAKE_SITE_NAME,
+                "description": FAKE_TAGLINE,
+                "url": base_url,
+                "home": base_url,
+                "gmt_offset": 0,
+                "generator": f"WordPress {FAKE_WORDPRESS_VERSION}",
+                "namespaces": WP_JSON_NAMESPACES,
+                "routes": {
+                    "/": {"namespace": "", "methods": ["GET"]},
+                    "/wp/v2/posts": {"namespace": "wp/v2", "methods": ["GET"]},
+                    "/oembed/1.0/embed": {"namespace": "oembed/1.0", "methods": ["GET"]},
+                },
+            }
+        )
+
+    @app.get("/readme.html", include_in_schema=False)
+    async def readme_page(request: Request) -> HTMLResponse:
+        context = build_template_context(
+            request,
+            page_title="Readme",
+            version_hint=FAKE_WORDPRESS_VERSION,
+            theme_name="Fieldnote",
+        )
+        return templates.TemplateResponse("wp_readme.html", context)
+
+    @app.get("/license.txt", include_in_schema=False)
+    async def license_txt() -> PlainTextResponse:
+        return PlainTextResponse(LICENSE_TEXT)
+
+    @app.get("/robots.txt", include_in_schema=False)
+    async def robots_txt() -> PlainTextResponse:
+        return PlainTextResponse(ROBOTS_TEXT)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> RedirectResponse:
+        return RedirectResponse("/wp-content/uploads/2025/09/fieldnote-mark.svg", status_code=302)
+
+    @app.get("/wp-content", include_in_schema=False)
+    @app.get("/wp-content/", include_in_schema=False)
+    async def wp_content_root(request: Request) -> HTMLResponse:
+        return render_status_page(
+            request,
+            title="Access Denied",
+            headline="Directory access is not available.",
+            message="Static content is published directly by the application and directory indexes are disabled.",
+            status_code=403,
+        )
+
+    @app.get("/wp-content/plugins/", include_in_schema=False)
+    @app.get("/wp-content/themes/", include_in_schema=False)
+    @app.get("/wp-content/uploads/", include_in_schema=False)
+    async def wp_content_subdirs(request: Request) -> HTMLResponse:
+        return render_status_page(
+            request,
+            title="Access Denied",
+            headline="Directory browsing is disabled.",
+            message="The requested content is not available through directory indexes.",
+            status_code=403,
+        )
+
+    @app.get("/wp-includes/", include_in_schema=False)
+    async def wp_includes(request: Request) -> HTMLResponse:
+        return render_status_page(
+            request,
+            title="Forbidden",
+            headline="Direct access to this area is restricted.",
+            message="Core include paths are not exposed for direct browsing.",
+            status_code=403,
+        )
+
+    app.mount(
+        "/wp-content/themes/fieldnote",
+        StaticFiles(directory=HONEYPOT_THEME_DIR),
+        name="wp-theme",
+    )
+    app.mount(
+        "/wp-content/uploads",
+        StaticFiles(directory=HONEYPOT_UPLOADS_DIR),
+        name="wp-uploads",
     )
 
-
-@app.get("/wp-json", include_in_schema=False)
-@app.get("/wp-json/", include_in_schema=False)
-async def wp_json(request: Request) -> JSONResponse:
-    base_url = site_base_url(request)
-    return JSONResponse(
-        {
-            "name": FAKE_SITE_NAME,
-            "description": FAKE_TAGLINE,
-            "url": base_url,
-            "home": base_url,
-            "gmt_offset": 0,
-            "generator": f"WordPress {FAKE_WORDPRESS_VERSION}",
-            "namespaces": WP_JSON_NAMESPACES,
-            "routes": {
-                "/": {"namespace": "", "methods": ["GET"]},
-                "/wp/v2/posts": {"namespace": "wp/v2", "methods": ["GET"]},
-                "/oembed/1.0/embed": {"namespace": "oembed/1.0", "methods": ["GET"]},
-            },
-        }
+    @app.api_route(
+        "/{full_path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+        include_in_schema=False,
     )
+    async def honeypot_not_found(request: Request, full_path: str) -> Response:
+        if is_management_path(request.url.path):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        return render_status_page(
+            request,
+            title="Not Found",
+            headline="Nothing matched that request.",
+            message="The requested page could not be located on this server.",
+            status_code=404,
+        )
 
 
-@app.get("/readme.html", include_in_schema=False)
-async def readme_page(request: Request) -> HTMLResponse:
-    context = build_template_context(
-        request,
-        page_title="Readme",
-        version_hint=FAKE_WORDPRESS_VERSION,
-        theme_name="Fieldnote",
-    )
-    return templates.TemplateResponse("wp_readme.html", context)
+if SERVE_DASHBOARD:
+    register_dashboard_routes(app)
 
-
-@app.get("/license.txt", include_in_schema=False)
-async def license_txt() -> PlainTextResponse:
-    return PlainTextResponse(LICENSE_TEXT)
-
-
-@app.get("/robots.txt", include_in_schema=False)
-async def robots_txt() -> PlainTextResponse:
-    return PlainTextResponse(ROBOTS_TEXT)
-
-
-@app.get("/favicon.ico", include_in_schema=False)
-async def favicon() -> RedirectResponse:
-    return RedirectResponse("/wp-content/uploads/2025/09/fieldnote-mark.svg", status_code=302)
-
-
-@app.get("/wp-content", include_in_schema=False)
-@app.get("/wp-content/", include_in_schema=False)
-async def wp_content_root(request: Request) -> HTMLResponse:
-    return render_status_page(
-        request,
-        title="Access Denied",
-        headline="Directory access is not available.",
-        message="Static content is published directly by the application and directory indexes are disabled.",
-        status_code=403,
-    )
-
-
-@app.get("/wp-content/plugins/", include_in_schema=False)
-@app.get("/wp-content/themes/", include_in_schema=False)
-@app.get("/wp-content/uploads/", include_in_schema=False)
-async def wp_content_subdirs(request: Request) -> HTMLResponse:
-    return render_status_page(
-        request,
-        title="Access Denied",
-        headline="Directory browsing is disabled.",
-        message="The requested content is not available through directory indexes.",
-        status_code=403,
-    )
-
-
-@app.get("/wp-includes/", include_in_schema=False)
-async def wp_includes(request: Request) -> HTMLResponse:
-    return render_status_page(
-        request,
-        title="Forbidden",
-        headline="Direct access to this area is restricted.",
-        message="Core include paths are not exposed for direct browsing.",
-        status_code=403,
-    )
-
-
-app.mount("/wp-content/themes/fieldnote", StaticFiles(directory=HONEYPOT_THEME_DIR), name="wp-theme")
-app.mount("/wp-content/uploads", StaticFiles(directory=HONEYPOT_UPLOADS_DIR), name="wp-uploads")
-
-
-@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
-async def honeypot_not_found(request: Request, full_path: str) -> Response:
-    if is_management_path(request.url.path):
-        return JSONResponse({"detail": "Not Found"}, status_code=404)
-    return render_status_page(
-        request,
-        title="Not Found",
-        headline="Nothing matched that request.",
-        message="The requested page could not be located on this server.",
-        status_code=404,
-    )
+if SERVE_HONEYPOT:
+    register_honeypot_routes(app)
