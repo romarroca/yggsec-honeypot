@@ -14,6 +14,9 @@ services:
       GEOIP_CITY_DB: /geoip/GeoLite2-City.mmdb
       GEOIP_ASN_DB: /geoip/GeoLite2-ASN.mmdb
       POLL_INTERVAL_SECONDS: "15"
+      EVENT_RETENTION_DAYS: "90"
+      CLEANUP_INTERVAL_SECONDS: "21600"
+      FAKE_SITE_NAME: "Northwind Field Notes"
     volumes:
       - /opt/honeypot/cowrie/cowrie-var:/cowrie/cowrie-var:ro
       - ./data:/state

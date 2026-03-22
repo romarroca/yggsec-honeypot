@@ -10,16 +10,16 @@
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin=""
     />
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/dashboard-static/style.css" />
   </head>
   <body>
     <div class="shell">
       <aside class="sidebar">
         <div class="hero">
-          <p class="eyebrow">Cowrie Honeypot</p>
-          <h1>Probe Origin Map</h1>
+          <p class="eyebrow">Cowrie + WordPress Honeypot</p>
+          <h1>Attack Surface Map</h1>
           <p class="hero-copy">
-            Local-first visibility into Cowrie sessions, failed logins, successful logins, and captured commands.
+            Local-first visibility into Cowrie sessions, WordPress-style web probes, failed logins, and captured commands.
           </p>
         </div>
 
@@ -40,13 +40,29 @@
           </label>
 
           <label>
+            <span>Source</span>
+            <select id="source">
+              <option value="all">All sources</option>
+              <option value="cowrie">Cowrie</option>
+              <option value="wordpress_web">WordPress web</option>
+            </select>
+          </label>
+
+          <label>
             <span>Event type</span>
-            <select id="eventid">
+            <select id="eventType">
               <option value="">All tracked events</option>
               <option value="cowrie.session.connect">cowrie.session.connect</option>
               <option value="cowrie.login.failed">cowrie.login.failed</option>
               <option value="cowrie.login.success">cowrie.login.success</option>
               <option value="cowrie.command.input">cowrie.command.input</option>
+              <option value="wp_login_page_view">wp_login_page_view</option>
+              <option value="wp_login_attempt">wp_login_attempt</option>
+              <option value="wp_admin_access">wp_admin_access</option>
+              <option value="xmlrpc_probe">xmlrpc_probe</option>
+              <option value="wp_json_probe">wp_json_probe</option>
+              <option value="generic_probe">generic_probe</option>
+              <option value="static_asset_request">static_asset_request</option>
             </select>
           </label>
 
@@ -88,6 +104,10 @@
               <span>30d</span>
               <strong id="last30d">0</strong>
             </article>
+            <article>
+              <span>WP logins 24h</span>
+              <strong id="webLogins24h">0</strong>
+            </article>
           </div>
         </section>
 
@@ -118,6 +138,27 @@
           </div>
           <ul id="eventBreakdown" class="list"></ul>
         </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Top Paths</h2>
+          </div>
+          <ul id="topPaths" class="list"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Top User Agents</h2>
+          </div>
+          <ul id="topUserAgents" class="list"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Recent WP Logins</h2>
+          </div>
+          <ul id="recentWebLogins" class="list login-list"></ul>
+        </section>
       </aside>
 
       <main class="map-wrap">
@@ -127,10 +168,10 @@
             <p id="mapMeta">Waiting for data...</p>
           </div>
           <div class="legend">
-            <span><i style="background:#3b82f6"></i>Connect</span>
-            <span><i style="background:#f97316"></i>Failed</span>
-            <span><i style="background:#16a34a"></i>Success</span>
-            <span><i style="background:#dc2626"></i>Command</span>
+            <span><i style="background:#2563eb"></i>Cowrie session</span>
+            <span><i style="background:#b91c1c"></i>WP login attempt</span>
+            <span><i style="background:#1d4ed8"></i>XML-RPC</span>
+            <span><i style="background:#475569"></i>Generic probe</span>
           </div>
         </div>
         <div id="map"></div>
@@ -142,6 +183,6 @@
       integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
-    <script src="/static/app.js" defer></script>
+    <script src="/dashboard-static/app.js" defer></script>
   </body>
 </html>

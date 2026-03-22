@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }} ‹ {{ site_name }}</title>
+    <meta name="generator" content="WordPress {{ wp_version }}" />
+    <link rel="stylesheet" href="{{ theme_stylesheet }}" />
+  </head>
+  <body class="wp-login-body">
+    <main class="login-shell">
+      <div class="login-brand">
+        <img src="{{ logo_path }}" alt="" />
+        <h1>{{ site_name }}</h1>
+      </div>
+
+      <section class="login-card">
+        {% if action == "lostpassword" %}
+        <h2>Reset your password</h2>
+        <p class="login-copy">Enter your username or email address and the site will look up account recovery options.</p>
+        {% else %}
+        <h2>Log in</h2>
+        <p class="login-copy">Use your site account to continue to the admin area.</p>
+        {% endif %}
+
+        {% if error_message %}
+        <div class="login-message login-message-error">{{ error_message }}</div>
+        {% endif %}
+
+        {% if recovery_notice %}
+        <div class="login-message login-message-ok">{{ recovery_notice }}</div>
+        {% endif %}
+
+        <form method="post" action="/wp-login.php" class="login-form" autocomplete="off">
+          <input type="hidden" name="redirect_to" value="{{ redirect_to }}" />
+          <input type="hidden" name="action" value="{{ action }}" />
+          <input type="hidden" name="testcookie" value="1" />
+
+          <label>
+            <span>Username or Email Address</span>
+            <input type="text" name="log" value="{{ last_username or '' }}" />
+          </label>
+
+          {% if action != "lostpassword" %}
+          <label>
+            <span>Password</span>
+            <input type="password" name="pwd" value="" />
+          </label>
+
+          <label class="remember-row">
+            <input type="checkbox" name="rememberme" value="forever" />
+            <span>Remember Me</span>
+          </label>
+          {% endif %}
+
+          <button type="submit" class="login-button">
+            {% if action == "lostpassword" %}Get recovery guidance{% else %}Log In{% endif %}
+          </button>
+        </form>
+
+        <div class="login-links">
+          <a href="/wp-login.php?action=lostpassword">Lost your password?</a>
+          <a href="/">Back to {{ site_name }}</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

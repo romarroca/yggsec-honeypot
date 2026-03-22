@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }} ‹ {{ site_name }}</title>
+    <meta name="generator" content="WordPress {{ wp_version }}" />
+    <link rel="stylesheet" href="{{ theme_stylesheet }}" />
+  </head>
+  <body class="wp-site">
+    <header class="site-header">
+      <div class="shell">
+        <a class="brand" href="/">
+          <img src="{{ logo_path }}" alt="" />
+          <span>{{ site_name }}</span>
+        </a>
+        <nav class="site-nav">
+          <a href="/">Home</a>
+          <a href="/wp-login.php">Log In</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="shell article-layout">
+      <article class="content-card article-card">
+        <p class="post-meta">{{ page_title }}</p>
+        <h1>{{ headline }}</h1>
+        <p>{{ message }}</p>
+      </article>
+    </main>
+  </body>
+</html>

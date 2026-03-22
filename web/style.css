@@ -225,6 +225,13 @@ button:hover {
   padding-bottom: 0;
 }
 
+.list li small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .list li span {
   color: var(--muted);
   line-height: 1.35;
@@ -312,6 +319,17 @@ button:hover {
 
 .popup-row strong {
   word-break: break-word;
+}
+
+.login-list li {
+  display: block;
+}
+
+.login-list li div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 @media (max-width: 1100px) {

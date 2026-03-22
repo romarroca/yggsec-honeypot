@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WordPress Support Notes</title>
+    <meta name="generator" content="WordPress {{ version_hint }}" />
+    <link rel="stylesheet" href="{{ theme_stylesheet }}" />
+  </head>
+  <body class="wp-site">
+    <main class="shell article-layout">
+      <article class="content-card article-card readme-card">
+        <h1>WordPress Support Notes</h1>
+        <p class="post-meta">Version hint: {{ version_hint }}</p>
+        <p>This publishing stack uses the <strong>{{ theme_name }}</strong> theme with a small set of editorial customizations.</p>
+        <h2>Installation status</h2>
+        <p>The application is configured and content services are already active.</p>
+        <h2>Theme notes</h2>
+        <p>Static assets are published from the theme directory and direct directory browsing is disabled.</p>
+        <h2>Operational notes</h2>
+        <p>Login is required for administrative actions. XML-RPC and JSON interfaces remain available for compatibility checks.</p>
+      </article>
+    </main>
+  </body>
+</html>

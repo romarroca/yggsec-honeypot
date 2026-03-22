@@ -21,10 +21,14 @@ const summaryTargets = {
   last24h: document.getElementById("last24h"),
   last7d: document.getElementById("last7d"),
   last30d: document.getElementById("last30d"),
+  webLogins24h: document.getElementById("webLogins24h"),
   topCountries: document.getElementById("topCountries"),
   topAsns: document.getElementById("topAsns"),
   topUsernames: document.getElementById("topUsernames"),
   eventBreakdown: document.getElementById("eventBreakdown"),
+  topPaths: document.getElementById("topPaths"),
+  topUserAgents: document.getElementById("topUserAgents"),
+  recentWebLogins: document.getElementById("recentWebLogins"),
 };
 
 const state = {
@@ -58,11 +62,12 @@ function datetimeLocalToIso(value) {
 function collectFilters() {
   const start = datetimeLocalToIso(document.getElementById("start").value);
   const end = datetimeLocalToIso(document.getElementById("end").value);
-  const eventid = document.getElementById("eventid").value.trim();
+  const source = document.getElementById("source").value.trim();
+  const event_type = document.getElementById("eventType").value.trim();
   const country = document.getElementById("country").value.trim();
   const src_ip = document.getElementById("src_ip").value.trim();
 
-  return { start, end, eventid, country, src_ip };
+  return { start, end, source, event_type, country, src_ip };
 }
 
 function buildQuery(filters, extra = {}) {
@@ -100,6 +105,7 @@ function renderSummary(summary) {
   summaryTargets.last24h.textContent = formatCount(summary.totals.last_24h);
   summaryTargets.last7d.textContent = formatCount(summary.totals.last_7d);
   summaryTargets.last30d.textContent = formatCount(summary.totals.last_30d);
+  summaryTargets.webLogins24h.textContent = formatCount(summary.totals.web_login_attempts_24h);
 
   renderList(
     summaryTargets.topCountries,
@@ -129,16 +135,43 @@ function renderSummary(summary) {
     summaryTargets.eventBreakdown,
     summary.event_breakdown,
     (item) =>
-      `<span>${escapeHtml(item.eventid)}</span><strong>${formatCount(item.count)}</strong>`,
+      `<span>${escapeHtml(item.event_type)}</span><strong>${formatCount(item.count)}</strong>`,
     "No matching events"
+  );
+
+  renderList(
+    summaryTargets.topPaths,
+    summary.top_paths,
+    (item) =>
+      `<span>${escapeHtml(item.path)}</span><strong>${formatCount(item.count)}</strong>`,
+    "No path data yet"
+  );
+
+  renderList(
+    summaryTargets.topUserAgents,
+    summary.top_user_agents,
+    (item) =>
+      `<span>${escapeHtml(item.user_agent)}</span><strong>${formatCount(item.count)}</strong>`,
+    "No user-agent data yet"
+  );
+
+  renderList(
+    summaryTargets.recentWebLogins,
+    summary.recent_web_login_attempts,
+    (item) =>
+      `<div><span>${escapeHtml(item.timestamp)}</span><strong>${escapeHtml(item.src_ip || "unknown")}</strong></div><small>${escapeHtml(item.username || "-")} / ${escapeHtml(item.password || "-")} • ${escapeHtml(item.path || "/wp-login.php")}</small>`,
+    "No recent WordPress login attempts"
   );
 }
 
 function popupHtml(properties) {
   const details = [
     ["Timestamp", properties.timestamp],
+    ["Source", properties.source],
     ["Event", properties.eventid],
     ["Source IP", properties.src_ip],
+    ["Method", properties.method],
+    ["Path", properties.path],
     ["Country", properties.country],
     ["City", properties.city],
     ["ASN", properties.asn_number ? `AS${properties.asn_number}` : ""],
@@ -172,11 +205,11 @@ function renderGeoJson(geojson) {
     const { marker_color: markerColor, ...properties } = feature.properties;
 
     const marker = L.circleMarker([latitude, longitude], {
-      radius: 6,
-      color: markerColor || "#0f172a",
-      weight: 1,
+      radius: properties.marker_radius || 6,
+      color: properties.marker_stroke_color || markerColor || "#0f172a",
+      weight: 2,
       fillColor: markerColor || "#0f172a",
-      fillOpacity: 0.75,
+      fillOpacity: properties.marker_fill_opacity || 0.75,
     });
 
     marker.bindPopup(popupHtml(properties), {
@@ -204,6 +237,16 @@ async function fetchJson(url) {
   return response.json();
 }
 
+function sourceBreakdownLabel(summary) {
+  if (!summary.source_breakdown || summary.source_breakdown.length === 0) {
+    return "";
+  }
+
+  return summary.source_breakdown
+    .map((item) => `${item.source}: ${formatCount(item.count)}`)
+    .join(" • ");
+}
+
 async function refreshDashboard() {
   const filters = collectFilters();
   statusBadge.textContent = "Refreshing";
@@ -217,6 +260,10 @@ async function refreshDashboard() {
 
     renderSummary(summary);
     renderGeoJson(geojson);
+    const breakdown = sourceBreakdownLabel(summary);
+    if (breakdown) {
+      mapMeta.textContent = `${mapMeta.textContent} ${breakdown}`;
+    }
     statusBadge.textContent = "Live";
     statusBadge.dataset.state = "live";
   } catch (error) {

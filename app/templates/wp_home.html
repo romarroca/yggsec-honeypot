@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <meta name="generator" content="WordPress {{ wp_version }}" />
+    <meta name="description" content="{{ site_tagline }}" />
+    <link rel="stylesheet" href="{{ theme_stylesheet }}" />
+  </head>
+  <body class="wp-site">
+    <header class="site-header">
+      <div class="shell">
+        <a class="brand" href="/">
+          <img src="{{ logo_path }}" alt="" />
+          <span>{{ site_name }}</span>
+        </a>
+        <nav class="site-nav">
+          <a href="/">Home</a>
+          <a href="/about/">About</a>
+          <a href="/wp-login.php">Log In</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="shell site-layout">
+      <section class="content-card hero-card">
+        <p class="kicker">WordPress {{ wp_version }}</p>
+        <h1>{{ hero_title }}</h1>
+        <p>{{ site_tagline }}</p>
+      </section>
+
+      <div class="content-grid">
+        <section class="content-column">
+          {% for post in posts %}
+          <article class="content-card post-card">
+            <p class="post-meta">{{ post.date }}</p>
+            <h2><a href="{{ post.url }}">{{ post.title }}</a></h2>
+            <p>{{ post.excerpt }}</p>
+            <a class="read-more" href="{{ post.url }}">Continue reading</a>
+          </article>
+          {% endfor %}
+        </section>
+
+        <aside class="sidebar-column">
+          <section class="content-card sidebar-card">
+            <h3>About This Site</h3>
+            <p>{{ site_tagline }}</p>
+          </section>
+
+          <section class="content-card sidebar-card">
+            <h3>Recent Notes</h3>
+            <ul class="mini-list">
+              {% for post in posts %}
+              <li><a href="{{ post.url }}">{{ post.title }}</a></li>
+              {% endfor %}
+            </ul>
+          </section>
+
+          <section class="content-card sidebar-card">
+            <h3>Meta</h3>
+            <ul class="mini-list">
+              <li><a href="/wp-login.php">Log in</a></li>
+              <li><a href="/readme.html">Readme</a></li>
+              <li><a href="/license.txt">License</a></li>
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </body>
+</html>
